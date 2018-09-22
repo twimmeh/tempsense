@@ -1,5 +1,6 @@
 --todo: add SNTP and RTC to add timestamps to measurements
 --todo: sleep modes. put into light sleep for 1 min. On wake, connect to wifi, take sample and push.
+--todo: using file to store stuff
 
 -- Includes
 require("queue")
@@ -30,8 +31,7 @@ local function Initialise()
     local sda, scl = 3, 4
     i2c.setup(0, sda, scl, i2c.SLOW) -- call i2c.setup() only once
     
-    -- initialize to sleep mode
-    bme280.setup(nil, nil, nil, 0) 
+    bme280.setup() 
 
     -- salso:
     -- As per datasheet "weather monitoring configuration" 1 x oversampling, forced mode. 1000ms standby. IIR off
@@ -40,6 +40,11 @@ local function Initialise()
     --config uart (not necessary)
     --uart.setup(0,115200,8,uart.PARITY_NONE,uart.STOPBITS_1,1);
     --print (uart.getconfig(0))
+
+    -- turn LED on
+    --local pin=4
+    --gpio.mode(pin,gpio.OUTPUT)  
+    --gpio.write(pin,gpio.LOW)
 end
 
 Initialise()
@@ -48,16 +53,19 @@ Initialise()
 queue = Queue.new()
 
 -- Every 60s get temp and humidity and push to in-memory queue
-local bmePolling_ms = 10000
+local bmePolling_ms = 60000
 tmr.alarm(0, bmePolling_ms, tmr.ALARM_AUTO, function ()
-    bme280.startreadout(0, function ()
-        T, P, H = bme280.read()
-        local Tsgn = (T < 0 and -1 or 1); T = Tsgn*T
+
+        --local H, T = bme280.humi()
+        --todo: validation
+        
+        --local Tsgn = (T < 0 and -1 or 1); T = Tsgn*T
         --print(string.format("T=%s%d.%02d", Tsgn<0 and "-" or "", T/100, T%100))
         --print(string.format("Humidity=%d.%03d%%", H/1000, H%1000))
 
         -- last-known good time.
-        tepoch = rtctime.get()
+        local T = bme280.read()
+        local tepoch = rtctime.get()
         
         if(tepoch == 0) then
             print("Warning: RTC not set up. Skipping sample")
@@ -67,39 +75,69 @@ tmr.alarm(0, bmePolling_ms, tmr.ALARM_AUTO, function ()
 
         sample = {
             temp = T/100.0,
-            humidity = H/1000.0,
+            --humidity = H/1000.0, 
             timestamp = tepoch
         }
 
-        
-        print("New sample pushed to queue: ", sample.temp)
+        --print("New sample pushed to queue: ", sample.temp)
         --tm = rtctime.epoch2cal(tepoch)
         --print(string.format("Sample recorded at %04d/%02d/%02d %02d:%02d:%02d", tm["year"], tm["mon"], tm["day"], tm["hour"], tm["min"], tm["sec"]))
-        Queue.pushleft(queue,s)
-    end)    
+        Queue.pushleft(queue, sample)
 end)
 
 
 --poll queue
-tmr.alarm(1, 6000, tmr.ALARM_AUTO, function ()
+tmr.alarm(1, 9000, tmr.ALARM_AUTO, function ()
     
     -- check wifi connectivity before trying to pop. 
-    
+    local status = wifi.sta.status()
+    if(status ~= wifi.STA_GOTIP) then
+        --should be trying to auto-connect. Wait until next iteration.
+        print("Wifi not connected. StatusCode: ", status)
+        return
+    end
+
     --pop from queue
     local item = Queue.popright(queue)
     if(item == nil) then
-        return
+        return --empty
     end
     
-    print("Popped item from queue.")
-    print ("Temp: ", item.temp)
-    print ("Humidity: ", item.humidity)
-    print ("Timestamp: ", item.timestamp)
-    
-    --todo: post somewhere. if failed then put back on the queue
-    --todo: post to powerbi + docdb + somewhere on local network?
+    print(string.format("Popped item from queue. T %02d",item.temp))
 
-    --if failed, push back onto queue
+    ---- post to powerbi
+    local tm = rtctime.epoch2cal(item.timestamp)
+    local timestamp = string.format("%04d-%02d-%02dT%02d:%02d:%02dZ", tm["year"], tm["mon"], tm["day"], tm["hour"], tm["min"], tm["sec"])
+    local postBody = {
+        timestamp = timestamp,
+        temperature = item.temp,
+        location = "baby room",
+        notes = "computer desk",
+        sensorId = "BMP280",
+        humidity = nil
+    }
+    
+    local ok,body = pcall(sjson.encode,postBody)
+    body = "[".. body.. "]"
+    if ok then
+        print("Posting to PowerBI")
+        http.post(creds.powerbi_url, 
+            'Content-Type: application/json\r\n',
+             body,
+             function(code, data)
+                if (code < 0) then
+                  print("HTTP request failed")
+                else
+                  print(code, data)
+                end
+            end)
+    else
+        print("sjson encode failed")
+    end
+
+    --todo: if failed then put back on the queue
+    --todo: post to docdb +/- somewhere on local network?
+    
 end)    
 
 --something about wifi suspend if the op is going to take more than 15ms??
