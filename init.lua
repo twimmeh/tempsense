@@ -5,6 +5,7 @@
 -- Includes
 require("queue")
 require("peedub")
+require("deviceconf")
 
 -- Config
 local function Initialise()
@@ -14,6 +15,7 @@ local function Initialise()
     --configure wifi
     print("Configuring WiFi\n")
     wifi.setmode(wifi.STATION)
+    wifi.sta.sethostname(deviceConf.wifi_hostname)
     local station_cfg = {}
     station_cfg.ssid = creds.wifi_ap
     station_cfg.pwd = creds.wifi_pw
@@ -24,7 +26,7 @@ local function Initialise()
         print("Kicking off SNTP")
         sntp.sync(nil, nil, nil, 1)
      end)
-    
+
     -- Setup BME 
     print("Configuring BME280 i2c interface\n")
     
@@ -64,7 +66,7 @@ tmr.alarm(0, bmePolling_ms, tmr.ALARM_AUTO, function ()
         --print(string.format("Humidity=%d.%03d%%", H/1000, H%1000))
 
         -- last-known good time.
-        local T = bme280.read()
+        local T, _, H, _= bme280.read()
         local tepoch = rtctime.get()
         
         if(tepoch == 0) then
@@ -73,12 +75,15 @@ tmr.alarm(0, bmePolling_ms, tmr.ALARM_AUTO, function ()
             return
         end
 
+        if H ~= nil then
+            H = H / 1000.0
+        end
+        
         sample = {
-            temp = T/100.0,
-            --humidity = H/1000.0, 
+            temp = T/100.0;
+            humidity = H,
             timestamp = tepoch
         }
-
         --print("New sample pushed to queue: ", sample.temp)
         --tm = rtctime.epoch2cal(tepoch)
         --print(string.format("Sample recorded at %04d/%02d/%02d %02d:%02d:%02d", tm["year"], tm["mon"], tm["day"], tm["hour"], tm["min"], tm["sec"]))
@@ -111,10 +116,10 @@ tmr.alarm(1, 9000, tmr.ALARM_AUTO, function ()
     local postBody = {
         timestamp = timestamp,
         temperature = item.temp,
-        location = "baby room",
-        notes = "computer desk",
-        sensorId = "BMP280",
-        humidity = nil
+        location = deviceConf.location,
+        notes = deviceConf.notes,
+        sensorId = deviceConf.sensorId,
+        humidity = item.humidity
     }
     
     local ok,body = pcall(sjson.encode,postBody)
